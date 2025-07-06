@@ -1,0 +1,58 @@
+Step 1. Create a Logging table (can be in a remote server)
+USE [admin]
+GO
+ 
+CREATE TABLE [dbo].[SQLServer_CPU_Usage](
+	[ID] [int] IDENTITY(1,1) NOT NULL,
+	[EventTime] [datetime] NULL,
+	[SQL_CPU] [float] NULL,
+	[System_CPU] [float] NULL,
+PRIMARY KEY CLUSTERED 
+(
+	[ID] ASC
+) 
+ 
+GO
+
+ALTER TABLE [dbo].[SQLServer_CPU_Usage] ADD  DEFAULT (getdate()) FOR [EventTime]
+GO
+
+-- select * from admin.dbo.SQLServer_CPU_Usage
+
+Step 2. Save the below PS as .ps1 file (e.g. to disk B:\abc\CPUUsage.ps1)
+
+# SQL Server Connection Details
+$SQLServer = "henok\testenv"  # Replace with your server name
+$Database = "admin"           # Database name
+$Table = "SQLServer_CPU_Usage" # Table name
+
+# Get Total System CPU Usage (correctly extract value)
+$SystemCPU = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples[0].CookedValue
+
+# Round the value to 2 decimal places
+$SystemCPU = [math]::Round([double]$SystemCPU, 2)
+
+# Construct SQL query to insert the CPU value into the table
+$SQLQuery = "INSERT INTO $Table (EventTime, System_CPU) VALUES (GETDATE(), $SystemCPU)"
+
+# Establish SQL Connection to the 'admin' database
+$ConnectionString = "Server=$SQLServer;Database=$Database;Integrated Security=True;"
+$Connection = New-Object System.Data.SqlClient.SqlConnection
+$Connection.ConnectionString = $ConnectionString
+$Connection.Open()
+
+# Execute the SQL query
+$Command = $Connection.CreateCommand()
+$Command.CommandText = $SQLQuery
+$Command.ExecuteNonQuery()
+
+# Close the connection
+$Connection.Close()
+
+# Output confirmation
+Write-Output "Inserted System CPU: $SystemCPU% into $Table at $(Get-Date)"
+
+
+STEP 3: RUNS A SQL SERVER AGENT JOB (CHOOSE POWERSHELL)
+powershell.exe -ExecutionPolicy Bypass -File "B:\ABC\CPUUsage.ps1"
+
