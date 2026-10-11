@@ -1,0 +1,92 @@
+1. Create a CPU history table
+
+USE  Admin;
+GO
+
+IF OBJECT_ID(N'dbo.CPUHistory', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.CPUHistory
+    (
+        SampleID bigint IDENTITY(1,1) PRIMARY KEY,
+        SampleTime datetime2(3) NOT NULL,
+        SQLServerCPU tinyint NULL,
+        SystemIdle tinyint NULL,
+        OtherProcessCPU AS
+        (
+            CASE
+                WHEN SQLServerCPU IS NULL OR SystemIdle IS NULL
+                    THEN NULL
+                WHEN 100 - SQLServerCPU - SystemIdle < 0
+                    THEN 0
+                ELSE 100 - SQLServerCPU - SystemIdle
+            END
+        ) PERSISTED,
+        ServerName sysname NOT NULL
+            CONSTRAINT DF_CPUHistory_ServerName
+            DEFAULT @@SERVERNAME
+    );
+2. Create the sampling stored procedure
+    CREATE INDEX IX_CPUHistory_SampleTime
+        ON dbo.CPUHistory (SampleTime DESC);
+END;
+GO
+
+USE  Admin;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.usp_CaptureCPUHistory
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @CPU TABLE
+    (
+        SQLServerCPU int,
+        SystemIdle int
+    );
+
+    INSERT INTO @CPU (SQLServerCPU, SystemIdle)
+    SELECT TOP (1)
+        rec.record.value(
+            '(Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]',
+            'int'
+        ),
+        rec.record.value(
+            '(Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]',
+            'int'
+        )
+    FROM sys.dm_os_ring_buffers AS rb
+    CROSS APPLY
+    (
+        VALUES (TRY_CONVERT(xml, rb.record))
+    ) AS rec(record)
+    WHERE rb.ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR'
+      AND rec.record IS NOT NULL
+      AND rec.record.exist(
+          '/Record/SchedulerMonitorEvent/SystemHealth'
+      ) = 1
+    ORDER BY rb.timestamp DESC;
+
+    INSERT INTO dbo.CPUHistory
+        (SampleTime, SQLServerCPU, SystemIdle)
+    SELECT
+        SYSDATETIME(),
+        SQLServerCPU,
+        SystemIdle
+    FROM @CPU;
+END;
+GO
+3. Schedule it with SQL Server Agent
+EXEC dbo.usp_CaptureCPUHistory;
+
+4. View the report by minute
+SELECT
+    SampleTime,
+    ServerName,
+    SQLServerCPU,
+    SystemIdle,
+    OtherProcessCPU
+FROM DBAAdmin.dbo.CPUHistory
+WHERE SampleTime >= DATEADD(HOUR, -1, SYSDATETIME())
+ORDER BY SampleTime DESC;
+
